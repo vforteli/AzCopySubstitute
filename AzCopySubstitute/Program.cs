@@ -2,7 +2,6 @@
 using Azure.Storage.Files.DataLake;
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -35,17 +34,13 @@ namespace AzCopySubstitute
             var totalcount = 0;
 
 
-            var filesystems = sourceDatalakeService.GetFileSystemsAsync();
-
             using var semaphore = new SemaphoreSlim(threads, threads);
 
             var stopwatch = Stopwatch.StartNew();
-            var tasks = new ConcurrentDictionary<Guid, Task>();
-            var copyTasks = new List<Task>();
+            var sourceFileTasks = new ConcurrentDictionary<Guid, Task>();
+            var copyTasks = new ConcurrentDictionary<Guid, Task>();
 
-
-
-            await foreach (var filesystem in filesystems)
+            await foreach (var filesystem in sourceDatalakeService.GetFileSystemsAsync())
             {
                 var sourceFileSystemClient = sourceDatalakeService.GetFileSystemClient(filesystem.Name);
                 var destinationFileSystemClient = destinationDataLakeService.GetBlobContainerClient(filesystem.Name);
@@ -70,8 +65,7 @@ namespace AzCopySubstitute
                     }
 
                     sourcePathNames.CompleteAdding();
-                    Console.WriteLine($"Found {filesCount} total files");
-                    Console.WriteLine("List files task done");
+                    Console.WriteLine($"List files done. Found {filesCount} total files");
                 });
 
                 Console.WriteLine("Starting consume tasks");
@@ -82,15 +76,21 @@ namespace AzCopySubstitute
                         await semaphore.WaitAsync();
 
                         var taskId = Guid.NewGuid();
-                        tasks.TryAdd(taskId, Task.Run(async () =>
+                        sourceFileTasks.TryAdd(taskId, Task.Run(async () =>
                         {
                             try
                             {
                                 var sourceFileClient = sourceFileSystemClient.GetFileClient(sourcePath);
                                 var destinationFileClient = destinationFileSystemClient.GetBlobClient(sourcePath);
                                 var status = await destinationFileClient.StartCopyFromUriAsync(sourceFileClient.Uri);
-                                //copyTasks.Add(status.WaitForCompletionAsync().AsTask());
-                                Interlocked.Increment(ref processedCount);
+
+                                copyTasks.TryAdd(taskId, status.WaitForCompletionAsync().AsTask().ContinueWith((o) => { copyTasks.TryRemove(taskId, out _); }));
+
+                                var currentCount = Interlocked.Increment(ref processedCount);
+                                if (currentCount % 10000 == 0)
+                                {
+                                    Console.WriteLine($"Queued {currentCount} copy tasks...");
+                                }
                             }
                             catch (Exception ex)
                             {
@@ -101,7 +101,7 @@ namespace AzCopySubstitute
                             {
                                 semaphore.Release();
                                 Interlocked.Increment(ref totalcount);
-                                tasks.TryRemove(taskId, out _);
+                                sourceFileTasks.TryRemove(taskId, out _);
                             }
                         }));
                     }
@@ -109,10 +109,12 @@ namespace AzCopySubstitute
                     Console.WriteLine("Consume task done");
                 });
 
+                Console.WriteLine("Waiting for list files and iterate tasks");
                 await Task.WhenAll(listFilesTask, iterateTask);
-                await Task.WhenAll(tasks.Values);
-                Console.WriteLine("All copy tasks have been started, waiting for them to complete...");
-                await Task.WhenAll(copyTasks);
+                Console.WriteLine("Waiting for source file task");
+                await Task.WhenAll(sourceFileTasks.Values);
+                Console.WriteLine($"All copy tasks have been started, waiting for {copyTasks.Count} to complete...");
+                await Task.WhenAll(copyTasks.Values);
             }
 
             Console.WriteLine($"Done, copy took {stopwatch.Elapsed}");
