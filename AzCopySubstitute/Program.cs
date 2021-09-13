@@ -1,4 +1,4 @@
-﻿using Azure.Storage.Blobs;
+using Azure.Storage.Blobs;
 using Azure.Storage.Files.DataLake;
 using System;
 using System.Collections.Concurrent;
@@ -57,9 +57,15 @@ namespace AzCopySubstitute
             };
 
             var stopwatch = Stopwatch.StartNew();
-            await foreach (var filesystem in sourceDatalakeService.GetFileSystemsAsync(cancellationToken: cancellationTokenSource.Token))
+            await foreach (var filesystem in sourceDatalakeService.GetFileSystemsAsync())
             {
+                if (cancellationTokenSource.IsCancellationRequested)
+                {
+                    break;
+                }
+
                 currentFileSystem = filesystem.Name;
+                currentContinuationToken = "";
 
                 var sourceFileSystemClient = sourceDatalakeService.GetFileSystemClient(filesystem.Name);
                 var destinationFileSystemClient = destinationDataLakeService.GetBlobContainerClient(filesystem.Name);
@@ -78,7 +84,7 @@ namespace AzCopySubstitute
                             {
                                 sourcePathNames.Add(sourcepath.Name);
                                 var currentCount = Interlocked.Increment(ref filesCount);
-                                if (currentCount % 10000 == 0)
+                                if (currentCount % 10 == 0)
                                 {
                                     Console.WriteLine($"Found {currentCount} files...");
                                 }
@@ -113,8 +119,7 @@ namespace AzCopySubstitute
                             try
                             {
                                 var sourceFileClient = sourceFileSystemClient.GetFileClient(sourcePath);
-                                var destinationFileClient = destinationFileSystemClient.GetBlobClient(sourcePath);
-                                var status = await destinationFileClient.StartCopyFromUriAsync(sourceFileClient.Uri);
+                                var status = await destinationFileSystemClient.GetBlobClient(sourcePath).StartCopyFromUriAsync(sourceFileClient.Uri);
 
                                 if (waitForCopyResult)
                                 {
@@ -136,9 +141,8 @@ namespace AzCopySubstitute
                             {
                                 semaphore.Release();
                                 Interlocked.Increment(ref totalcount);
-                                sourceFileTasks.TryRemove(taskId, out _);
                             }
-                        }));
+                        }).ContinueWith((o) => { sourceFileTasks.TryRemove(taskId, out _); }));
                     }
 
                     Console.WriteLine("Consume task done");
