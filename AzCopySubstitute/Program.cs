@@ -1,8 +1,6 @@
-﻿using Azure.Storage.Blobs;
-using Azure.Storage.Files.DataLake;
+﻿using Azure.Storage.Files.DataLake;
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,17 +20,7 @@ namespace AzCopySubstitute
         /// <returns></returns>
         static async Task Main(string sourceConnection, string destinationConnection, bool recursive = true, int threads = 1000, bool waitForCopyResult = false)
         {
-            var sourceUri = new Uri(sourceConnection);
-
-            var sourceDatalakeService = new DataLakeServiceClient(sourceUri);
-
-            var processedCount = 0;
-            var failedCount = 0;
-            var totalcount = 0;
             using var cancellationTokenSource = new CancellationTokenSource();
-
-
-            using var semaphore = new SemaphoreSlim(threads, threads);
 
             Console.CancelKeyPress += (s, e) =>
             {
@@ -52,29 +40,29 @@ namespace AzCopySubstitute
             var stopwatch = Stopwatch.StartNew();
 
 
-
+            var sourceDatalakeService = new DataLakeServiceClient(new Uri(sourceConnection));
             var sourceFileSystemClient = sourceDatalakeService.GetFileSystemClient("stuff");
             var rootDirectory = sourceFileSystemClient.GetDirectoryClient("/");
 
-
-            var sourcePathNames = new BlockingCollection<string>();
-
-
+            var paths = new BlockingCollection<string>();
 
             Console.WriteLine("Starting list files task");
-            var listFilesTask = DataLakePathTraverser.ListPathsAsync(rootDirectory, sourcePathNames, cancellationTokenSource.Token);
+            var listFilesTask = DataLakePathTraverser.ListPathsAsync(rootDirectory, paths, cancellationTokenSource.Token);
+
+            Console.WriteLine("Starting consume tasks");
+            var consumeTask = TestConsumer.Consume(paths, sourceFileSystemClient, 1000, cancellationTokenSource.Token);
 
 
+            Console.WriteLine("Waiting for producer and consumer tasks");
+            await Task.WhenAll(listFilesTask, consumeTask);
 
-            Console.WriteLine("Waiting for list files and iterate tasks");
-            await Task.WhenAll(listFilesTask);
+            var (processedCount, failedCount, totalCount) = consumeTask.Result;
 
-
-            Console.WriteLine(sourcePathNames.Count);
+            Console.WriteLine(paths.Count);
             Console.WriteLine($"Done, copy took {stopwatch.Elapsed}");
             Console.WriteLine($"Processed: {processedCount}");
             Console.WriteLine($"Failed: {failedCount}");
-            Console.WriteLine($"Total: {totalcount}");
+            Console.WriteLine($"Total: {totalCount}");
         }
     }
 }
