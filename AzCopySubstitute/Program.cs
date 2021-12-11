@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -58,7 +59,13 @@ namespace AzCopySubstitute
 
             var (processedCount, failedCount, totalCount) = consumeTask.Result;
 
-            Console.WriteLine(paths.Count);
+            //Console.WriteLine($"Found {paths.Count} files");
+            //if (paths.Count != paths.ToList().Distinct().Count())
+            //{
+            //    Console.Error.WriteLine("Uh oh, something doesnt add up with paths");
+            //    Environment.Exit(1);
+            //}
+
             Console.WriteLine($"Done, copy took {stopwatch.Elapsed}");
             Console.WriteLine($"Processed: {processedCount}");
             Console.WriteLine($"Failed: {failedCount}");

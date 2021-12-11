@@ -14,29 +14,29 @@ namespace AzCopySubstitute
         /// <param name="directoryClient">Directory where recursive listing should start</param>
         /// <param name="paths">BlockingCollection where paths will be stored</param>
         /// <param name="cancellationToken"></param>
-        /// <returns></returns>
+        /// <returns>Task which completes when all items have been added to the blocking collection</returns>
         public static Task ListPathsAsync(DataLakeDirectoryClient directoryClient, BlockingCollection<string> paths, CancellationToken cancellationToken = default) => Task.Run(async () =>
         {
             // todo this should probably allow specifying depth before calling recursively
 
-            var maxThreads = 16;
+            var maxThreads = 32;
             var filesCount = 0;
             var listFilesTasks = new ConcurrentDictionary<Guid, Task>();
 
             try
             {
                 using var semaphore = new SemaphoreSlim(maxThreads, maxThreads);
-                await foreach (var path in directoryClient.GetPathsAsync(recursive: false, cancellationToken: cancellationToken))
+                await foreach (var path in directoryClient.GetPathsAsync(recursive: false, cancellationToken: cancellationToken).ConfigureAwait(false))
                 {
                     if (path.IsDirectory ?? false)
                     {
-                        await semaphore.WaitAsync();
+                        await semaphore.WaitAsync().ConfigureAwait(false);
                         var taskId = Guid.NewGuid();
                         listFilesTasks.TryAdd(taskId, Task.Run(async () =>
                         {
                             try
                             {
-                                await foreach (var childPath in directoryClient.GetSubDirectoryClient(path.Name).GetPathsAsync(recursive: true, cancellationToken: cancellationToken))
+                                await foreach (var childPath in directoryClient.GetSubDirectoryClient(path.Name).GetPathsAsync(recursive: true, cancellationToken: cancellationToken).ConfigureAwait(false))
                                 {
                                     if (!childPath.IsDirectory ?? false)
                                     {
@@ -68,7 +68,7 @@ namespace AzCopySubstitute
                 }
 
                 Console.WriteLine("Listed top level directories, waiting for sub directory tasks to complete");
-                await Task.WhenAll(listFilesTasks.Values);
+                await Task.WhenAll(listFilesTasks.Values).ConfigureAwait(false);
             }
             catch (TaskCanceledException)
             {
