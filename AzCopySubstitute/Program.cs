@@ -2,6 +2,7 @@
 using Azure.Storage.Files.DataLake;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,7 +26,6 @@ namespace AzCopySubstitute
 
             var sourceDatalakeService = new DataLakeServiceClient(sourceUri);
 
-            var filesCount = 0;
             var processedCount = 0;
             var failedCount = 0;
             var totalcount = 0;
@@ -33,11 +33,6 @@ namespace AzCopySubstitute
 
 
             using var semaphore = new SemaphoreSlim(threads, threads);
-
-            var sourceFileTasks = new ConcurrentDictionary<Guid, Task>();
-            var copyTasks = new ConcurrentDictionary<Guid, Task>();
-            var currentContinuationToken = "";
-            var currentFileSystem = "";
 
             Console.CancelKeyPress += (s, e) =>
             {
@@ -59,6 +54,7 @@ namespace AzCopySubstitute
 
 
             var sourceFileSystemClient = sourceDatalakeService.GetFileSystemClient("stuff");
+            var rootDirectory = sourceFileSystemClient.GetDirectoryClient("/");
 
 
             var sourcePathNames = new BlockingCollection<string>();
@@ -66,48 +62,15 @@ namespace AzCopySubstitute
 
 
             Console.WriteLine("Starting list files task");
-            var listFilesTask = Task.Run(async () =>
-            {
-                try
-                {
-                    await foreach (var sourcePathPage in sourceFileSystemClient.GetPathsAsync(recursive: recursive, cancellationToken: cancellationTokenSource.Token).AsPages(pageSizeHint: 5000))
-                    {
-                        foreach (var sourcepath in sourcePathPage.Values)
-                        {
-                            sourcePathNames.Add(sourcepath.Name);
-                            var currentCount = Interlocked.Increment(ref filesCount);
-                            if (currentCount % 1000 == 0)
-                            {
-                                Console.WriteLine($"Found {currentCount} files...");
-                            }
-                        }
-
-                        currentContinuationToken = sourcePathPage.ContinuationToken;
-                    }
-                }
-                catch (TaskCanceledException)
-                {
-                    Console.WriteLine("\n\nStopping list path task. To continue from here use token:");
-                    Console.WriteLine($"ContinuationToken: {currentContinuationToken}");
-                    Console.WriteLine($"FileSystem: {currentFileSystem}\n\n");
-                }
-                finally
-                {
-                    sourcePathNames.CompleteAdding();
-                    Console.WriteLine($"List files done. Found {filesCount} total files to copy");
-                }
-            });
+            var listFilesTask = DataLakePathTraverser.ListPathsAsync(rootDirectory, sourcePathNames, cancellationTokenSource.Token);
 
 
 
             Console.WriteLine("Waiting for list files and iterate tasks");
             await Task.WhenAll(listFilesTask);
-            Console.WriteLine($"Waiting for {sourceFileTasks.Count} source file tasks to complete");
-            await Task.WhenAll(sourceFileTasks.Values);
-            Console.WriteLine($"All copy tasks have been started, waiting for {copyTasks.Count} to complete...");
-            await Task.WhenAll(copyTasks.Values);
 
 
+            Console.WriteLine(sourcePathNames.Count);
             Console.WriteLine($"Done, copy took {stopwatch.Elapsed}");
             Console.WriteLine($"Processed: {processedCount}");
             Console.WriteLine($"Failed: {failedCount}");
