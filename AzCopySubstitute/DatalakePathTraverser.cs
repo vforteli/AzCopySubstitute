@@ -28,7 +28,6 @@ namespace AzCopySubstitute
                 using var semaphore = new SemaphoreSlim(maxThreads, maxThreads);
                 await foreach (var path in directoryClient.GetPathsAsync(recursive: false, cancellationToken: cancellationToken))
                 {
-                    // todo this should also handle files in root directories
                     if (path.IsDirectory ?? false)
                     {
                         await semaphore.WaitAsync();
@@ -60,6 +59,11 @@ namespace AzCopySubstitute
                                 semaphore.Release();
                             }
                         }).ContinueWith((o) => { listFilesTasks.TryRemove(taskId, out _); }));
+                    }
+                    else
+                    {
+                        paths.Add(path.Name);
+                        Interlocked.Increment(ref filesCount);
                     }
                 }
 
