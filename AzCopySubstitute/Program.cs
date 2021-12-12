@@ -1,4 +1,5 @@
 ﻿using Azure.Storage.Files.DataLake;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -21,6 +22,12 @@ namespace AzCopySubstitute
         /// <returns></returns>
         static async Task Main(string sourceConnection, string destinationConnection, bool recursive = true, int threads = 1000, bool waitForCopyResult = false)
         {
+            var loggerFactory = LoggerFactory.Create(builder =>
+            {
+                builder.AddConsole();
+            });
+            var logger = loggerFactory.CreateLogger<DataLakePathTraverser>();
+
             using var cancellationTokenSource = new CancellationTokenSource();
 
             Console.CancelKeyPress += (s, e) =>
@@ -43,12 +50,12 @@ namespace AzCopySubstitute
 
             var sourceDatalakeService = new DataLakeServiceClient(new Uri(sourceConnection));
             var sourceFileSystemClient = sourceDatalakeService.GetFileSystemClient("stuff");
-            var rootDirectory = sourceFileSystemClient.GetDirectoryClient("/");
+            var pathTraverser = new DataLakePathTraverser(sourceFileSystemClient, logger);
 
             var paths = new BlockingCollection<string>();
 
             Console.WriteLine("Starting list files task");
-            var listFilesTask = DataLakePathTraverser.ListPathsAsync(rootDirectory, paths, cancellationTokenSource.Token);
+            var listFilesTask = pathTraverser.ListPathsAsync("/partition01/", paths, cancellationTokenSource.Token);
 
             Console.WriteLine("Starting consume tasks");
             var consumeTask = TestConsumer.Consume(paths, sourceFileSystemClient, 1000, cancellationTokenSource.Token);

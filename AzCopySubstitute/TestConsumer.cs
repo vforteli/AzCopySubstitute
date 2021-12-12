@@ -13,7 +13,7 @@ namespace AzCopySubstitute
             var processedCount = 0;
             var failedCount = 0;
             var totalcount = 0;
-            //return (processedCount, failedCount, totalcount);
+            return (processedCount, failedCount, totalcount);
             var consumeTasks = new ConcurrentDictionary<Guid, Task>();
             using var semaphore = new SemaphoreSlim(threads, threads);
 
