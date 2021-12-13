@@ -24,7 +24,10 @@ namespace AzCopySubstitute
         {
             var loggerFactory = LoggerFactory.Create(builder =>
             {
-                builder.AddConsole();
+                builder.AddSimpleConsole(o =>
+                {
+                    o.SingleLine = true;
+                });
             });
             var logger = loggerFactory.CreateLogger<DataLakePathTraverser>();
 
@@ -35,20 +38,19 @@ namespace AzCopySubstitute
                 if (!cancellationTokenSource.IsCancellationRequested)
                 {
                     e.Cancel = true;
-                    Console.WriteLine("Breaking, waiting for queued tasks to complete. Press break again to force stop");
+                    logger.LogWarning("Breaking, waiting for queued tasks to complete. Press break again to force stop");
                     cancellationTokenSource.Cancel();
                 }
                 else
                 {
-                    Console.WriteLine("Terminating threads");
+                    logger.LogWarning("Terminating threads");
                     Environment.Exit(1);
                 }
             };
 
             var stopwatch = Stopwatch.StartNew();
 
-            var sourceDatalakeService = new DataLakeServiceClient(new Uri(sourceConnection));
-            var sourceFileSystemClient = sourceDatalakeService.GetFileSystemClient("stuff");
+            var sourceFileSystemClient = new DataLakeServiceClient(new Uri(sourceConnection)).GetFileSystemClient("stuff");
             var pathTraverser = new DataLakePathTraverser(sourceFileSystemClient, logger);
 
 
@@ -69,23 +71,21 @@ namespace AzCopySubstitute
 
             var paths = new BlockingCollection<string>();
 
-            Console.WriteLine("Starting list files task");
+            logger.LogInformation("Starting list files task");
             var listFilesTask = pathTraverser.ListPathsAsync("/", paths, cancellationTokenSource.Token);
 
-            Console.WriteLine("Starting consume tasks");
-
+            logger.LogInformation("Starting consume tasks");
             var consumeTask = pathTraverser.ConsumePathsAsync(paths, func, threads, cancellationTokenSource.Token);
 
-
-            Console.WriteLine("Waiting for producer and consumer tasks");
+            logger.LogInformation("Waiting for producer and consumer tasks");
             await Task.WhenAll(listFilesTask, consumeTask);
 
             var (processedCount, failedCount, totalCount) = consumeTask.Result;
 
-            Console.WriteLine($"Done, copy took {stopwatch.Elapsed}");
-            Console.WriteLine($"Processed: {processedCount}");
-            Console.WriteLine($"Failed: {failedCount}");
-            Console.WriteLine($"Total: {totalCount}");
+            logger.LogInformation($"Done, took {stopwatch.Elapsed}");
+            logger.LogInformation($"Processed: {processedCount}");
+            logger.LogInformation($"Failed: {failedCount}");
+            logger.LogInformation($"Total: {totalCount}");
         }
     }
 }

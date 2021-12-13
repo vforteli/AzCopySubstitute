@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -36,9 +37,10 @@ namespace AzCopySubstitute
         {
             // todo this should probably allow specifying depth before calling recursively
 
-            var maxThreads = 48;
+            var maxThreads = 16;
             var filesCount = 0;
-            var listFilesTasks = new ConcurrentDictionary<Guid, Task>();
+            var tasks = new ConcurrentDictionary<Guid, Task>();
+            var sw = Stopwatch.StartNew();
 
             try
             {
@@ -47,9 +49,9 @@ namespace AzCopySubstitute
                 {
                     if (path.IsDirectory ?? false)
                     {
-                        await semaphore.WaitAsync().ConfigureAwait(false);
+                        await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
                         var taskId = Guid.NewGuid();
-                        listFilesTasks.TryAdd(taskId, Task.Run(async () =>
+                        tasks.TryAdd(taskId, Task.Run(async () =>
                         {
                             try
                             {
@@ -61,11 +63,12 @@ namespace AzCopySubstitute
                                         var currentCount = Interlocked.Increment(ref filesCount);
                                         if (currentCount % 1000 == 0)
                                         {
-                                            _logger.LogInformation($"Found {currentCount} files...");
+                                            _logger.LogInformation($"Found {currentCount} files. {currentCount / (sw.ElapsedMilliseconds / 1000)} fps");
                                         }
                                     }
                                 }
                             }
+                            catch (TaskCanceledException) { }
                             catch (Exception ex)
                             {
                                 _logger.LogError(ex, "Failed listing files in path {path}", path.Name);
@@ -74,7 +77,7 @@ namespace AzCopySubstitute
                             {
                                 semaphore.Release();
                             }
-                        }).ContinueWith((o) => { listFilesTasks.TryRemove(taskId, out _); }));
+                        }, cancellationToken).ContinueWith((o) => { tasks.TryRemove(taskId, out _); }));
                     }
                     else
                     {
@@ -84,16 +87,16 @@ namespace AzCopySubstitute
                 }
 
                 _logger.LogInformation("Listed top level directories, waiting for sub directory tasks to complete");
-                await Task.WhenAll(listFilesTasks.Values).ConfigureAwait(false);
+                await Task.WhenAll(tasks.Values).ConfigureAwait(false);
             }
             catch (TaskCanceledException)
             {
-                _logger.LogInformation("\n\nStopping list path task");
+                _logger.LogWarning("Cancelled list path task");
             }
             finally
             {
                 paths.CompleteAdding();
-                _logger.LogInformation($"List files done. Found {filesCount} total files");
+                _logger.LogInformation($"List files done. Found {filesCount} total files. {filesCount / (sw.ElapsedMilliseconds / 1000)} fps");
             }
         });
 
@@ -106,48 +109,51 @@ namespace AzCopySubstitute
         /// <param name="func">Function to be called for each path</param>
         /// <param name="cancellationToken"></param>        
         public Task<(int totalCount, int processedCount, int failedCount)> ConsumePathsAsync(BlockingCollection<string> paths, Func<string, Task<bool>> func, int maxThreads = 16, CancellationToken cancellationToken = default) => Task.Run(async () =>
-       {
-           _logger.LogInformation($"Started consume tasks with {maxThreads} max threads");
-           var processedCount = 0;
-           var failedCount = 0;
-           var totalcount = 0;
+        {
+            var processedCount = 0;
+            var failedCount = 0;
+            var totalCount = 0;
 
-           var tasks = new ConcurrentDictionary<Guid, Task>();
-           using var semaphore = new SemaphoreSlim(maxThreads, maxThreads);
+            var sw = Stopwatch.StartNew();
+            var tasks = new ConcurrentDictionary<Guid, Task>();
+            using var semaphore = new SemaphoreSlim(maxThreads, maxThreads);
 
-           while (paths.TryTake(out var path, -1, cancellationToken))
-           {
-               await semaphore.WaitAsync(cancellationToken);
+            while (paths.TryTake(out var path, -1, cancellationToken))
+            {
+                await semaphore.WaitAsync(cancellationToken);
 
-               var taskId = Guid.NewGuid();
-               tasks.TryAdd(taskId, Task.Run(async () =>
-               {
-                   try
-                   {
-                       await func.Invoke(path).ConfigureAwait(false);
+                var taskId = Guid.NewGuid();
+                tasks.TryAdd(taskId, Task.Run(async () =>
+                {
+                    try
+                    {
+                        if (await func.Invoke(path).ConfigureAwait(false))
+                        {
+                            var currentCount = Interlocked.Increment(ref processedCount);
+                            if (currentCount % 1000 == 0)
+                            {
+                                _logger.LogInformation($"Processed {currentCount} files... {totalCount / (sw.ElapsedMilliseconds / 1000)} fps");
+                            }
+                        }
+                    }
+                    catch (TaskCanceledException) { }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Something went wrong with {path}", path);
+                        Interlocked.Increment(ref failedCount);
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                        Interlocked.Increment(ref totalCount);
+                    }
+                }, cancellationToken).ContinueWith(o => tasks.TryRemove(taskId, out _)));
+            }
 
-                       var currentCount = Interlocked.Increment(ref processedCount);
-                       if (currentCount % 1000 == 0)
-                       {
-                           Console.WriteLine($"Queued {currentCount} copy tasks...");
-                       }
-                   }
-                   catch (Exception ex)
-                   {
-                       _logger.LogError(ex, "Something went wrong with {path}", path);
-                       Interlocked.Increment(ref failedCount);
-                   }
-                   finally
-                   {
-                       semaphore.Release();
-                       Interlocked.Increment(ref totalcount);
-                   }
-               }, cancellationToken).ContinueWith(o => tasks.TryRemove(taskId, out _)));
-           }
+            await Task.WhenAll(tasks.Values);
+            _logger.LogInformation($"{totalCount / (sw.ElapsedMilliseconds / 1000)} fps");
 
-           await Task.WhenAll(tasks.Values);
-
-           return (processedCount, failedCount, totalcount);
-       });
+            return (processedCount, failedCount, totalCount);
+        });
     }
 }
