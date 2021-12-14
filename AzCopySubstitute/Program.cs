@@ -1,4 +1,5 @@
 ﻿using Azure.Storage.Files.DataLake;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -21,6 +22,15 @@ namespace AzCopySubstitute
         /// <returns></returns>
         static async Task Main(string sourceConnection, string destinationConnection, bool recursive = true, int threads = 1000, bool waitForCopyResult = false)
         {
+            var loggerFactory = LoggerFactory.Create(builder =>
+            {
+                builder.AddSimpleConsole(o =>
+                {
+                    o.SingleLine = true;
+                });
+            });
+            var logger = loggerFactory.CreateLogger<DataLakePathTraverser>();
+
             using var cancellationTokenSource = new CancellationTokenSource();
 
             Console.CancelKeyPress += (s, e) =>
@@ -28,48 +38,54 @@ namespace AzCopySubstitute
                 if (!cancellationTokenSource.IsCancellationRequested)
                 {
                     e.Cancel = true;
-                    Console.WriteLine("Breaking, waiting for queued tasks to complete. Press break again to force stop");
+                    logger.LogWarning("Breaking, waiting for queued tasks to complete. Press break again to force stop");
                     cancellationTokenSource.Cancel();
                 }
                 else
                 {
-                    Console.WriteLine("Terminating threads");
+                    logger.LogWarning("Terminating threads");
                     Environment.Exit(1);
                 }
             };
 
             var stopwatch = Stopwatch.StartNew();
 
+            var sourceFileSystemClient = new DataLakeServiceClient(new Uri(sourceConnection)).GetFileSystemClient("stuff");
+            var pathTraverser = new DataLakePathTraverser(sourceFileSystemClient, logger);
 
-            var sourceDatalakeService = new DataLakeServiceClient(new Uri(sourceConnection));
-            var sourceFileSystemClient = sourceDatalakeService.GetFileSystemClient("stuff");
-            var rootDirectory = sourceFileSystemClient.GetDirectoryClient("/");
+
+            Func<string, Task<bool>> func = async (string path) =>
+            {
+                var sourceFileClient = sourceFileSystemClient.GetFileClient(path);
+                var metadata = await sourceFileClient.GetPropertiesAsync(cancellationToken: cancellationTokenSource.Token).ConfigureAwait(false);
+                //var destinationFileClient = destinationFileSystemClient.GetBlobClient(path);
+                //var status = await destinationFileClient.StartCopyFromUriAsync(sourceFileClient.Uri);
+
+                //if (waitForCopyResult)
+                //{
+                //    copyTasks.TryAdd(taskId, status.WaitForCompletionAsync().AsTask().ContinueWith((o) => { copyTasks.TryRemove(taskId, out _); }));
+                //}
+                return true;
+            };
+
 
             var paths = new BlockingCollection<string>();
 
-            Console.WriteLine("Starting list files task");
-            var listFilesTask = DataLakePathTraverser.ListPathsAsync(rootDirectory, paths, cancellationTokenSource.Token);
+            logger.LogInformation("Starting list files task");
+            var listFilesTask = pathTraverser.ListPathsAsync("/", paths, cancellationTokenSource.Token);
 
-            Console.WriteLine("Starting consume tasks");
-            var consumeTask = TestConsumer.Consume(paths, sourceFileSystemClient, 1000, cancellationTokenSource.Token);
+            logger.LogInformation("Starting consume tasks");
+            var consumeTask = pathTraverser.ConsumePathsAsync(paths, func, threads, cancellationTokenSource.Token);
 
-
-            Console.WriteLine("Waiting for producer and consumer tasks");
+            logger.LogInformation("Waiting for producer and consumer tasks");
             await Task.WhenAll(listFilesTask, consumeTask);
 
             var (processedCount, failedCount, totalCount) = consumeTask.Result;
 
-            //Console.WriteLine($"Found {paths.Count} files");
-            //if (paths.Count != paths.ToList().Distinct().Count())
-            //{
-            //    Console.Error.WriteLine("Uh oh, something doesnt add up with paths");
-            //    Environment.Exit(1);
-            //}
-
-            Console.WriteLine($"Done, copy took {stopwatch.Elapsed}");
-            Console.WriteLine($"Processed: {processedCount}");
-            Console.WriteLine($"Failed: {failedCount}");
-            Console.WriteLine($"Total: {totalCount}");
+            logger.LogInformation($"Done, took {stopwatch.Elapsed}");
+            logger.LogInformation($"Processed: {processedCount}");
+            logger.LogInformation($"Failed: {failedCount}");
+            logger.LogInformation($"Total: {totalCount}");
         }
     }
 }
