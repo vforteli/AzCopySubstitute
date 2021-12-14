@@ -29,11 +29,11 @@ namespace AzCopySubstitute
         /// <param name="dataLakeFileSystemClient">Authenticated filesystem client where the search should start</param>
         /// <param name="searchPath">Directory where recursive listing should start</param>
         /// <param name="paths">BlockingCollection where paths will be stored</param>
+        /// <param name="maxThreads">Max degrees of parallelism</param>
         /// <param name="cancellationToken"></param>
         /// <returns>Task which completes when all items have been added to the blocking collection</returns>
-        public Task ListPathsAsync(DataLakeFileSystemClient dataLakeFileSystemClient, string searchPath, BlockingCollection<string> paths, CancellationToken cancellationToken = default) => Task.Run(async () =>
+        public Task ListPathsAsync(DataLakeFileSystemClient dataLakeFileSystemClient, string searchPath, BlockingCollection<string> paths, int maxThreads = 16, CancellationToken cancellationToken = default) => Task.Run(async () =>
         {
-            var maxThreads = 32;
             var filesCount = 0;
             var tasks = new ConcurrentDictionary<Guid, Task>();
             var sw = Stopwatch.StartNew();
@@ -101,7 +101,7 @@ namespace AzCopySubstitute
         /// List paths recursively using multiple thread for top level directories
         /// </summary>        
         /// <param name="paths">BlockingCollection where paths will be stored</param>
-        /// <param name="maxThreads">Limits the maximum degree of parallellism</param>
+        /// <param name="maxThreads">Max degrees of parallelism</param>
         /// <param name="func">Function to be called for each path</param>
         /// <param name="cancellationToken"></param>        
         public Task<(int totalCount, int processedCount, int failedCount)> ConsumePathsAsync(BlockingCollection<string> paths, Func<string, Task<bool>> func, int maxThreads = 16, CancellationToken cancellationToken = default) => Task.Run(async () =>

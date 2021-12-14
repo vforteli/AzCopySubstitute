@@ -17,10 +17,11 @@ namespace AzCopySubstitute
         /// <param name="sourceConnection">Source connection string with sas token</param>
         /// <param name="destinationConnection">Destination connection string with sas token</param>
         /// <param name="recursive"></param>
-        /// <param name="threads"></param>
+        /// <param name="listThreads"></param>
+        /// <param name="workerThreads"></param>       
         /// <param name="waitForCopyResult"></param>        
         /// <returns></returns>
-        static async Task Main(string sourceConnection, string destinationConnection, bool recursive = true, int threads = 1000, bool waitForCopyResult = false)
+        static async Task Main(string sourceConnection, string destinationConnection, bool recursive = true, int listThreads = 16, int workerThreads = 16, bool waitForCopyResult = false)
         {
             var loggerFactory = LoggerFactory.Create(builder =>
             {
@@ -51,7 +52,7 @@ namespace AzCopySubstitute
             var stopwatch = Stopwatch.StartNew();
 
             var sourceFileSystemClient = new DataLakeServiceClient(new Uri(sourceConnection)).GetFileSystemClient("stuff");
-            var pathTraverser = new DataLakePathTraverser(sourceFileSystemClient, logger);
+            var pathTraverser = new DataLakePathTraverser(logger);
 
 
             Func<string, Task<bool>> func = async (string path) =>
@@ -72,10 +73,10 @@ namespace AzCopySubstitute
             var paths = new BlockingCollection<string>();
 
             logger.LogInformation("Starting list files task");
-            var listFilesTask = pathTraverser.ListPathsAsync("/", paths, cancellationTokenSource.Token);
+            var listFilesTask = pathTraverser.ListPathsAsync(sourceFileSystemClient, "/", paths, listThreads, cancellationTokenSource.Token);
 
             logger.LogInformation("Starting consume tasks");
-            var consumeTask = pathTraverser.ConsumePathsAsync(paths, func, threads, cancellationTokenSource.Token);
+            var consumeTask = pathTraverser.ConsumePathsAsync(paths, func, workerThreads, cancellationTokenSource.Token);
 
             logger.LogInformation("Waiting for producer and consumer tasks");
             await Task.WhenAll(listFilesTask, consumeTask);
