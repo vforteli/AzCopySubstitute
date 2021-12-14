@@ -10,18 +10,15 @@ namespace AzCopySubstitute
 {
     internal class DataLakePathTraverser
     {
-        private readonly DataLakeFileSystemClient _dataLakeFileSystemClient;
         private readonly ILogger _logger;
 
 
         /// <summary>
         /// DataLakePathTraverser
-        /// </summary>
-        /// <param name="dataLakeFileSystemClient">Authenticated filesystem client where the search should start</param>
+        /// </summary>        
         /// <param name="logger">Logger</param>
-        public DataLakePathTraverser(DataLakeFileSystemClient dataLakeFileSystemClient, ILogger<DataLakePathTraverser> logger)
+        public DataLakePathTraverser(ILogger<DataLakePathTraverser> logger)
         {
-            _dataLakeFileSystemClient = dataLakeFileSystemClient;
             _logger = logger;
         }
 
@@ -29,15 +26,14 @@ namespace AzCopySubstitute
         /// <summary>
         /// List paths recursively using multiple thread for top level directories
         /// </summary>
+        /// <param name="dataLakeFileSystemClient">Authenticated filesystem client where the search should start</param>
         /// <param name="searchPath">Directory where recursive listing should start</param>
         /// <param name="paths">BlockingCollection where paths will be stored</param>
         /// <param name="cancellationToken"></param>
         /// <returns>Task which completes when all items have been added to the blocking collection</returns>
-        public Task ListPathsAsync(string searchPath, BlockingCollection<string> paths, CancellationToken cancellationToken = default) => Task.Run(async () =>
+        public Task ListPathsAsync(DataLakeFileSystemClient dataLakeFileSystemClient, string searchPath, BlockingCollection<string> paths, CancellationToken cancellationToken = default) => Task.Run(async () =>
         {
-            // todo this should probably allow specifying depth before calling recursively
-
-            var maxThreads = 16;
+            var maxThreads = 32;
             var filesCount = 0;
             var tasks = new ConcurrentDictionary<Guid, Task>();
             var sw = Stopwatch.StartNew();
@@ -45,7 +41,7 @@ namespace AzCopySubstitute
             try
             {
                 using var semaphore = new SemaphoreSlim(maxThreads, maxThreads);
-                await foreach (var path in _dataLakeFileSystemClient.GetPathsAsync(searchPath, recursive: false, cancellationToken: cancellationToken).ConfigureAwait(false))
+                await foreach (var path in dataLakeFileSystemClient.GetPathsAsync(searchPath, recursive: false, cancellationToken: cancellationToken).ConfigureAwait(false))
                 {
                     if (path.IsDirectory ?? false)
                     {
@@ -55,7 +51,7 @@ namespace AzCopySubstitute
                         {
                             try
                             {
-                                await foreach (var childPath in _dataLakeFileSystemClient.GetPathsAsync(path.Name, recursive: true, cancellationToken: cancellationToken).ConfigureAwait(false))
+                                await foreach (var childPath in dataLakeFileSystemClient.GetPathsAsync(path.Name, recursive: true, cancellationToken: cancellationToken).ConfigureAwait(false))
                                 {
                                     if (!childPath.IsDirectory ?? false)
                                     {
@@ -96,7 +92,7 @@ namespace AzCopySubstitute
             finally
             {
                 paths.CompleteAdding();
-                _logger.LogInformation($"List files done. Found {filesCount} total files. {filesCount / (sw.ElapsedMilliseconds / 1000)} fps");
+                _logger.LogInformation($"List files done. Found {filesCount} total files. {filesCount / (sw.ElapsedMilliseconds / 1000f)} fps");
             }
         });
 
@@ -120,7 +116,7 @@ namespace AzCopySubstitute
 
             while (paths.TryTake(out var path, -1, cancellationToken))
             {
-                await semaphore.WaitAsync(cancellationToken);
+                await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 
                 var taskId = Guid.NewGuid();
                 tasks.TryAdd(taskId, Task.Run(async () =>
@@ -132,7 +128,7 @@ namespace AzCopySubstitute
                             var currentCount = Interlocked.Increment(ref processedCount);
                             if (currentCount % 1000 == 0)
                             {
-                                _logger.LogInformation($"Processed {currentCount} files... {totalCount / (sw.ElapsedMilliseconds / 1000)} fps");
+                                _logger.LogInformation($"Processed {currentCount} files... {totalCount / (sw.ElapsedMilliseconds / 1000f)} fps");
                             }
                         }
                     }
@@ -150,8 +146,8 @@ namespace AzCopySubstitute
                 }, cancellationToken).ContinueWith(o => tasks.TryRemove(taskId, out _)));
             }
 
-            await Task.WhenAll(tasks.Values);
-            _logger.LogInformation($"{totalCount / (sw.ElapsedMilliseconds / 1000)} fps");
+            await Task.WhenAll(tasks.Values).ConfigureAwait(false);
+            _logger.LogInformation($"{totalCount / (sw.ElapsedMilliseconds / 1000f)} fps");
 
             return (processedCount, failedCount, totalCount);
         });
