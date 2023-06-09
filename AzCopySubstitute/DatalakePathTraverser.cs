@@ -92,7 +92,7 @@ namespace AzCopySubstitute
             finally
             {
                 paths.CompleteAdding();
-                _logger.LogInformation($"List files done. Found {filesCount} total files. {filesCount / (sw.ElapsedMilliseconds / 1000f)} fps");
+                _logger.LogInformation($"List files done. Found {filesCount} total files. {filesCount / (sw.ElapsedMilliseconds / 1000f)} fps, duration: {sw.ElapsedMilliseconds}ms");
             }
         });
 
