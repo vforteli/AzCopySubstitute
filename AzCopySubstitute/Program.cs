@@ -57,6 +57,7 @@ class Program
 
         Func<string, Task<bool>> func = async (string path) =>
         {
+            await Task.CompletedTask;
             //var sourceFileClient = sourceFileSystemClient.GetFileClient(path);
             //var metadata = await sourceFileClient.GetPropertiesAsync(cancellationToken: cancellationTokenSource.Token).ConfigureAwait(false);
             //var destinationFileClient = destinationFileSystemClient.GetBlobClient(path);
@@ -73,7 +74,7 @@ class Program
         var paths = new BlockingCollection<string>();
 
         logger.LogInformation("Starting list files task");
-        var listFilesTask = pathTraverser.ListPathsAsync(sourceFileSystemClient, "/", paths, listThreads, cancellationTokenSource.Token);
+        var listFilesTask = pathTraverser.ListPathsNoRecursiveAsync(sourceFileSystemClient, "/", paths, listThreads, cancellationTokenSource.Token);
 
         logger.LogInformation("Starting consume tasks");
         var consumeTask = pathTraverser.ConsumePathsAsync(paths, func, workerThreads, cancellationTokenSource.Token);
