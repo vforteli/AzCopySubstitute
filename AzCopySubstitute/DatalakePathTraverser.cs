@@ -119,50 +119,55 @@ internal class DataLakePathTraverser
 
         directoryPaths.Add(searchPath);
 
-
         try
         {
-            while (directoryPaths.TryTake(out var directoryPath, Timeout.Infinite))
+            while (!directoryPaths.IsCompleted)
             {
                 await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-                //_logger.LogInformation($"Listing directory {directoryPath}");
-                var taskId = Guid.NewGuid();
-                tasks.TryAdd(taskId, Task.Run(async () =>
+
+                if (directoryPaths.TryTake(out var directoryPath, Timeout.Infinite, cancellationToken))
                 {
-                    try
+                    var taskId = Guid.NewGuid();
+                    tasks.TryAdd(taskId, Task.Run(async () =>
                     {
-                        await foreach (var childPath in dataLakeFileSystemClient.GetPathsAsync(directoryPath, recursive: false, cancellationToken: cancellationToken).ConfigureAwait(false))
+                        try
                         {
-                            if (!childPath.IsDirectory ?? false)
+                            await foreach (var childPath in dataLakeFileSystemClient.GetPathsAsync(directoryPath, recursive: false, cancellationToken: cancellationToken).ConfigureAwait(false))
                             {
-                                paths.Add(childPath.Name);
-                                var currentCount = Interlocked.Increment(ref filesCount);
-                                if (currentCount % 1000 == 0)
+                                if (!childPath.IsDirectory ?? false)
                                 {
-                                    _logger.LogInformation($"Found {currentCount} files. {currentCount / (sw.ElapsedMilliseconds / 1000)} fps");
+                                    paths.Add(childPath.Name);
+                                    var currentCount = Interlocked.Increment(ref filesCount);
+                                    if (currentCount % 1000 == 0)
+                                    {
+                                        _logger.LogInformation($"Found {currentCount} files. {currentCount / (sw.ElapsedMilliseconds / 1000)} fps");
+                                    }
+                                }
+                                else
+                                {
+                                    directoryPaths.Add(childPath.Name);
                                 }
                             }
-                            else
+                        }
+                        catch (TaskCanceledException) { }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Failed listing files in path {path}", directoryPath);
+                        }
+                        finally
+                        {
+                            tasks.TryRemove(taskId, out _);
+                            semaphore.Release();
+
+                            if (tasks.IsEmpty && directoryPaths.Count == 0)
                             {
-                                //_logger.LogInformation($"adding directory {childPath.Name}");
-                                directoryPaths.Add(childPath.Name);
+                                _logger.LogInformation("Tasks list is empty and directory paths list is empty... guess we are done");
+                                directoryPaths.CompleteAdding();
                             }
                         }
-                    }
-                    catch (TaskCanceledException) { }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Failed listing files in path {path}", directoryPath);
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                }, cancellationToken).ContinueWith((o) => { tasks.TryRemove(taskId, out _); }));
+                    }, cancellationToken));
+                }
             }
-
-            _logger.LogInformation("Listed top level directories, waiting for sub directory tasks to complete");
-            await Task.WhenAll(tasks.Values).ConfigureAwait(false);
         }
         catch (TaskCanceledException)
         {
