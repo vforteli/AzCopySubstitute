@@ -7,85 +7,86 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace AzCopySubstitute
+namespace AzCopySubstitute;
+
+class Program
 {
-    class Program
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <param name="sourceConnection">Source connection string with sas token</param>
+    /// <param name="destinationConnection">Destination connection string with sas token</param>
+    /// <param name="recursive"></param>
+    /// <param name="listThreads"></param>
+    /// <param name="workerThreads"></param>       
+    /// <param name="waitForCopyResult"></param>        
+    /// <returns></returns>
+    static async Task Main(string sourceConnection, string destinationConnection, bool recursive = true, int listThreads = 16, int workerThreads = 16, bool waitForCopyResult = false)
     {
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <param name="sourceConnection">Source connection string with sas token</param>
-        /// <param name="destinationConnection">Destination connection string with sas token</param>
-        /// <param name="recursive"></param>
-        /// <param name="threads"></param>
-        /// <param name="waitForCopyResult"></param>        
-        /// <returns></returns>
-        static async Task Main(string sourceConnection, string destinationConnection, bool recursive = true, int threads = 1000, bool waitForCopyResult = false)
+        var loggerFactory = LoggerFactory.Create(builder =>
         {
-            var loggerFactory = LoggerFactory.Create(builder =>
+            builder.AddSimpleConsole(o =>
             {
-                builder.AddSimpleConsole(o =>
-                {
-                    o.SingleLine = true;
-                });
+                o.SingleLine = true;
             });
-            var logger = loggerFactory.CreateLogger<DataLakePathTraverser>();
+        });
+        var logger = loggerFactory.CreateLogger<DataLakePathTraverser>();
 
-            using var cancellationTokenSource = new CancellationTokenSource();
+        using var cancellationTokenSource = new CancellationTokenSource();
 
-            Console.CancelKeyPress += (s, e) =>
+        Console.CancelKeyPress += (s, e) =>
+        {
+            if (!cancellationTokenSource.IsCancellationRequested)
             {
-                if (!cancellationTokenSource.IsCancellationRequested)
-                {
-                    e.Cancel = true;
-                    logger.LogWarning("Breaking, waiting for queued tasks to complete. Press break again to force stop");
-                    cancellationTokenSource.Cancel();
-                }
-                else
-                {
-                    logger.LogWarning("Terminating threads");
-                    Environment.Exit(1);
-                }
-            };
-
-            var stopwatch = Stopwatch.StartNew();
-
-            var sourceFileSystemClient = new DataLakeServiceClient(new Uri(sourceConnection)).GetFileSystemClient("stuff");
-            var pathTraverser = new DataLakePathTraverser(sourceFileSystemClient, logger);
-
-
-            Func<string, Task<bool>> func = async (string path) =>
+                e.Cancel = true;
+                logger.LogWarning("Breaking, waiting for queued tasks to complete. Press break again to force stop");
+                cancellationTokenSource.Cancel();
+            }
+            else
             {
-                var sourceFileClient = sourceFileSystemClient.GetFileClient(path);
-                var metadata = await sourceFileClient.GetPropertiesAsync(cancellationToken: cancellationTokenSource.Token).ConfigureAwait(false);
-                //var destinationFileClient = destinationFileSystemClient.GetBlobClient(path);
-                //var status = await destinationFileClient.StartCopyFromUriAsync(sourceFileClient.Uri);
+                logger.LogWarning("Terminating threads");
+                Environment.Exit(1);
+            }
+        };
 
-                //if (waitForCopyResult)
-                //{
-                //    copyTasks.TryAdd(taskId, status.WaitForCompletionAsync().AsTask().ContinueWith((o) => { copyTasks.TryRemove(taskId, out _); }));
-                //}
-                return true;
-            };
+        var stopwatch = Stopwatch.StartNew();
+
+        var sourceFileSystemClient = new DataLakeServiceClient(new Uri(sourceConnection)).GetFileSystemClient("stuff");
+        var pathTraverser = new DataLakePathTraverser(logger);
 
 
-            var paths = new BlockingCollection<string>();
+        Func<string, Task<bool>> func = async (string path) =>
+        {
+            await Task.CompletedTask;
+            //var sourceFileClient = sourceFileSystemClient.GetFileClient(path);
+            //var metadata = await sourceFileClient.GetPropertiesAsync(cancellationToken: cancellationTokenSource.Token).ConfigureAwait(false);
+            //var destinationFileClient = destinationFileSystemClient.GetBlobClient(path);
+            //var status = await destinationFileClient.StartCopyFromUriAsync(sourceFileClient.Uri);
 
-            logger.LogInformation("Starting list files task");
-            var listFilesTask = pathTraverser.ListPathsAsync("/", paths, cancellationTokenSource.Token);
+            //if (waitForCopyResult)
+            //{
+            //    copyTasks.TryAdd(taskId, status.WaitForCompletionAsync().AsTask().ContinueWith((o) => { copyTasks.TryRemove(taskId, out _); }));
+            //}
+            return true;
+        };
 
-            logger.LogInformation("Starting consume tasks");
-            var consumeTask = pathTraverser.ConsumePathsAsync(paths, func, threads, cancellationTokenSource.Token);
 
-            logger.LogInformation("Waiting for producer and consumer tasks");
-            await Task.WhenAll(listFilesTask, consumeTask);
+        var paths = new BlockingCollection<string>();
 
-            var (processedCount, failedCount, totalCount) = consumeTask.Result;
+        logger.LogInformation("Starting list files task");
+        var listFilesTask = pathTraverser.ListPathsNoRecursiveAsync(sourceFileSystemClient, "/", paths, listThreads, cancellationTokenSource.Token);
 
-            logger.LogInformation($"Done, took {stopwatch.Elapsed}");
-            logger.LogInformation($"Processed: {processedCount}");
-            logger.LogInformation($"Failed: {failedCount}");
-            logger.LogInformation($"Total: {totalCount}");
-        }
+        logger.LogInformation("Starting consume tasks");
+        var consumeTask = pathTraverser.ConsumePathsAsync(paths, func, workerThreads, cancellationTokenSource.Token);
+
+        logger.LogInformation("Waiting for producer and consumer tasks");
+        await Task.WhenAll(listFilesTask, consumeTask);
+
+        var (processedCount, failedCount, totalCount) = consumeTask.Result;
+
+        logger.LogInformation($"Done, took {stopwatch.Elapsed}");
+        logger.LogInformation($"Processed: {processedCount}");
+        logger.LogInformation($"Failed: {failedCount}");
+        logger.LogInformation($"Total: {totalCount}");
     }
 }
